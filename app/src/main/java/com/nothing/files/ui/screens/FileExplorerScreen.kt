@@ -13,6 +13,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -99,10 +100,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import com.nothing.files.engine.ArchiveConfig
 import com.nothing.files.engine.ArchiveEngine
 import com.nothing.files.engine.BookmarkManager
 import com.nothing.files.engine.FileManagerEngine
 import com.nothing.files.engine.PinManager
+import com.nothing.files.engine.PrivilegedFileEngine
+import com.nothing.files.engine.RootShellEngine
+import com.nothing.files.engine.ThumbnailEngine
 import com.nothing.files.engine.SortBy
 import com.nothing.files.engine.SortOption
 import com.nothing.files.engine.StorageAnalyzerEngine
@@ -121,6 +126,21 @@ import com.nothing.files.ui.theme.NothingSurface
 import com.nothing.files.ui.theme.NothingSurfaceElevated
 import com.nothing.files.ui.theme.NothingTextSecondary
 import com.nothing.files.ui.theme.NothingWhite
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import com.nothing.files.ui.components.FileThumbnailView
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -130,13 +150,15 @@ import java.util.Locale
 enum class ClipboardAction {
     COPY,
     MOVE,
-    EXTRACT
+    EXTRACT,
+    ARCHIVE
 }
 
 data class ClipboardTask(
     val id: String = java.util.UUID.randomUUID().toString(),
     val action: ClipboardAction,
     val files: List<FileItem>,
+    val archiveConfig: ArchiveConfig? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -250,8 +272,28 @@ fun FileExplorerScreen(
     var showCreateDocumentDialog by remember { mutableStateOf(false) }
     var showStorageDialog by remember { mutableStateOf(false) }
 
+    // Interactive Pinch-to-Zoom Scale
+    var zoomScale by remember { mutableFloatStateOf(1.0f) }
+    var showZoomHud by remember { mutableStateOf(false) }
+    var lastZoomTime by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(lastZoomTime) {
+        if (lastZoomTime > 0L) {
+            showZoomHud = true
+            delay(1200)
+            showZoomHud = false
+        }
+    }
+
     // Storage summary
     var storageSummary by remember { mutableStateOf<StorageSpaceAnalysis?>(null) }
+    var isRootActive by remember { mutableStateOf<Boolean>(RootShellEngine.isRootGranted()) }
+
+    LaunchedEffect(currentTab.path) {
+        if (!isRootActive) {
+            isRootActive = RootShellEngine.isRootAvailable()
+        }
+    }
 
     fun refreshFiles() {
         isLoading = true
@@ -362,6 +404,27 @@ fun FileExplorerScreen(
                         Toast.makeText(context, "Extraction failed", Toast.LENGTH_SHORT).show()
                     }
                 }
+                ClipboardAction.ARCHIVE -> {
+                    val config = task.archiveConfig ?: ArchiveConfig(
+                        archiveName = if (task.files.size == 1) "${File(task.files.first().path).nameWithoutExtension}.zip" else "Archive_${System.currentTimeMillis() % 10000}.zip"
+                    )
+                    Toast.makeText(context, "Creating archive '${config.archiveName}' in ${targetDir.name}...", Toast.LENGTH_SHORT).show()
+                    var ok = false
+                    withContext(Dispatchers.IO) {
+                        val outputFile = File(targetDir, config.archiveName)
+                        val filesToArchive = task.files.map { File(it.path) }
+                        ok = archiveEngine.createConfiguredArchive(
+                            sourceFiles = filesToArchive,
+                            outputArchiveFile = outputFile,
+                            config = config
+                        )
+                    }
+                    if (ok) {
+                        Toast.makeText(context, "Archive '${config.archiveName}' created", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "Failed to create archive", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
             clipboardTasks.remove(task)
             if (clipboardTasks.isEmpty()) showClipboardDropdown = false
@@ -393,6 +456,20 @@ fun FileExplorerScreen(
                                 }
                                 archiveEngine.extractArchive(archiveFile, outDir)
                             }
+                        }
+                    }
+                    ClipboardAction.ARCHIVE -> {
+                        val config = task.archiveConfig ?: ArchiveConfig(
+                            archiveName = if (task.files.size == 1) "${File(task.files.first().path).nameWithoutExtension}.zip" else "Archive_${System.currentTimeMillis() % 10000}.zip"
+                        )
+                        val outputFile = File(targetDir, config.archiveName)
+                        val filesToArchive = task.files.map { File(it.path) }
+                        withContext(Dispatchers.IO) {
+                            archiveEngine.createConfiguredArchive(
+                                sourceFiles = filesToArchive,
+                                outputArchiveFile = outputFile,
+                                config = config
+                            )
                         }
                     }
                 }
@@ -469,7 +546,7 @@ fun FileExplorerScreen(
         NothingCard(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(0.dp),
-            backgroundColor = NothingSurface,
+            backgroundColor = NothingBlack,
             borderColor = NothingBorder
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -539,10 +616,17 @@ fun FileExplorerScreen(
 
                                 DropdownMenu(
                                     expanded = showSelectionDropdown,
-                                    onDismissRequest = { showSelectionDropdown = false }
+                                    onDismissRequest = { showSelectionDropdown = false },
+                                    modifier = Modifier
+                                        .background(NothingBlack)
+                                        .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Select all", fontFamily = FontFamily.Monospace) },
+                                        text = { Text("Select all", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                                        colors = MenuDefaults.itemColors(
+                                            textColor = NothingWhite,
+                                            leadingIconColor = NothingWhite
+                                        ),
                                         onClick = {
                                             showSelectionDropdown = false
                                             selectedFiles.clear()
@@ -550,7 +634,11 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Invert selection", fontFamily = FontFamily.Monospace) },
+                                        text = { Text("Invert selection", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                                        colors = MenuDefaults.itemColors(
+                                            textColor = NothingWhite,
+                                            leadingIconColor = NothingWhite
+                                        ),
                                         onClick = {
                                             showSelectionDropdown = false
                                             val remaining = displayFiles.filter { it !in selectedFiles }
@@ -559,7 +647,11 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Clear selection", fontFamily = FontFamily.Monospace) },
+                                        text = { Text("Clear selection", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                                        colors = MenuDefaults.itemColors(
+                                            textColor = NothingWhite,
+                                            leadingIconColor = NothingWhite
+                                        ),
                                         onClick = {
                                             showSelectionDropdown = false
                                             selectedFiles.clear()
@@ -688,38 +780,50 @@ fun FileExplorerScreen(
 
                                 DropdownMenu(
                                     expanded = showSelectionOverflowMenu,
-                                    onDismissRequest = { showSelectionOverflowMenu = false }
+                                    onDismissRequest = { showSelectionOverflowMenu = false },
+                                    modifier = Modifier
+                                        .background(NothingBlack)
+                                        .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
                                 ) {
+                                    val menuColors = MenuDefaults.itemColors(
+                                        textColor = NothingWhite,
+                                        leadingIconColor = NothingWhite
+                                    )
                                     DropdownMenuItem(
-                                        text = { Text("Share", fontFamily = FontFamily.Default) },
+                                        text = { Text("Share", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             shareFiles(context, selectedFiles)
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Send to...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Send to...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             shareFiles(context, selectedFiles)
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Open", fontFamily = FontFamily.Default) },
+                                        text = { Text("Open", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             selectedFiles.firstOrNull()?.let { openWithExternalApp(it, context) }
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Open with...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Open with...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             selectedFiles.firstOrNull()?.let { openWithExternalApp(it, context) }
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Archive", fontFamily = FontFamily.Default) },
+                                        text = { Text("Archive", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             showCreateArchiveDialog = true
@@ -732,9 +836,10 @@ fun FileExplorerScreen(
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     Icon(Icons.Default.Archive, contentDescription = null, tint = NothingRed, modifier = Modifier.size(18.dp))
                                                     Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Extract...", fontFamily = FontFamily.Default)
+                                                    Text("Extract...", fontFamily = FontFamily.Default, color = NothingWhite)
                                                 }
                                             },
+                                            colors = menuColors,
                                             onClick = {
                                                 showSelectionOverflowMenu = false
                                                 val count = selectedArchives.size
@@ -748,9 +853,10 @@ fun FileExplorerScreen(
                                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                                     Icon(Icons.Default.Archive, contentDescription = null, tint = NothingRed, modifier = Modifier.size(18.dp))
                                                     Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Extract here", fontFamily = FontFamily.Default)
+                                                    Text("Extract here", fontFamily = FontFamily.Default, color = NothingWhite)
                                                 }
                                             },
+                                            colors = menuColors,
                                             onClick = {
                                                 showSelectionOverflowMenu = false
                                                 executeQuickExtract(selectedArchives)
@@ -762,9 +868,10 @@ fun FileExplorerScreen(
                                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                                         Icon(Icons.Default.Archive, contentDescription = null, tint = NothingWhite, modifier = Modifier.size(18.dp))
                                                         Spacer(modifier = Modifier.width(8.dp))
-                                                        Text("Browse archive", fontFamily = FontFamily.Default)
+                                                        Text("Browse archive", fontFamily = FontFamily.Default, color = NothingWhite)
                                                     }
                                                 },
+                                                colors = menuColors,
                                                 onClick = {
                                                     showSelectionOverflowMenu = false
                                                     val arc = selectedArchives.first()
@@ -775,14 +882,16 @@ fun FileExplorerScreen(
                                         }
                                     }
                                     DropdownMenuItem(
-                                        text = { Text("Encrypt", fontFamily = FontFamily.Default) },
+                                        text = { Text("Encrypt", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             showEncryptDialog = true
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Add to...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Add to...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             val first = selectedFiles.firstOrNull()
@@ -793,7 +902,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Pin", fontFamily = FontFamily.Default) },
+                                        text = { Text("Pin", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             selectedFiles.forEach { PinManager.togglePin(context, it.path) }
@@ -804,7 +914,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Hide", fontFamily = FontFamily.Default) },
+                                        text = { Text("Hide", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             scope.launch {
@@ -820,7 +931,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Copy to...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Copy to...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             isFolderPickerMove = false
@@ -828,7 +940,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Move to...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Move to...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             isFolderPickerMove = true
@@ -836,14 +949,16 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Edit Tags", fontFamily = FontFamily.Default) },
+                                        text = { Text("Edit Tags", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             showTagsDialog = true
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Share local link", fontFamily = FontFamily.Default) },
+                                        text = { Text("Share local link", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             val first = selectedFiles.firstOrNull()
@@ -855,7 +970,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Mail to...", fontFamily = FontFamily.Default) },
+                                        text = { Text("Mail to...", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             val first = selectedFiles.firstOrNull()
@@ -876,7 +992,8 @@ fun FileExplorerScreen(
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Copy path", fontFamily = FontFamily.Default) },
+                                        text = { Text("Copy path", fontFamily = FontFamily.Default, color = NothingWhite) },
+                                        colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
                                             val paths = selectedFiles.joinToString("\n") { it.path }
@@ -985,10 +1102,17 @@ fun FileExplorerScreen(
                             DropdownMenu(
                                 expanded = showMoreMenu,
                                 onDismissRequest = { showMoreMenu = false },
-                                modifier = Modifier.background(NothingSurface)
+                                modifier = Modifier
+                                    .background(NothingBlack)
+                                    .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
                             ) {
+                                val moreMenuColors = MenuDefaults.itemColors(
+                                    textColor = NothingWhite,
+                                    leadingIconColor = NothingWhite
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Undo", fontFamily = FontFamily.Default, fontSize = 14.sp, color = NothingWhite) },
+                                    colors = moreMenuColors,
                                     onClick = {
                                         showMoreMenu = false
                                         Toast.makeText(context, "No recent operation to undo", Toast.LENGTH_SHORT).show()
@@ -1240,8 +1364,39 @@ fun FileExplorerScreen(
             }
         }
 
-        // 2. File Content Area (With Long-Press & Thumbnails)
-        Box(modifier = Modifier.weight(1f)) {
+        // 2. File Content Area (With Dynamic Pinch Zoom & Thumbnails)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val downPointers = event.changes.filter { it.pressed }
+                            if (downPointers.size >= 2) {
+                                val p0 = downPointers[0].position
+                                val p1 = downPointers[1].position
+                                val prevP0 = downPointers[0].previousPosition
+                                val prevP1 = downPointers[1].previousPosition
+                                val currDist = (p0 - p1).getDistance()
+                                val prevDist = (prevP0 - prevP1).getDistance()
+                                if (prevDist > 1f && currDist > 1f) {
+                                    val factor = currDist / prevDist
+                                    if (factor in 0.3f..3.0f) {
+                                        zoomScale = (zoomScale * factor).coerceIn(0.35f, 4.0f)
+                                        lastZoomTime = System.currentTimeMillis()
+                                    }
+                                }
+                                event.changes.forEach { it.consume() }
+                            } else {
+                                if (event.changes.all { !it.pressed }) {
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
             if (isLoading) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -1250,33 +1405,110 @@ fun FileExplorerScreen(
                     CircularProgressIndicator(color = NothingRed, strokeWidth = 2.dp)
                 }
             } else if (displayFiles.isEmpty()) {
+                val isAndroidDataOrObb = currentTab.path.lowercase().contains("/android/data") || currentTab.path.lowercase().contains("/android/obb")
+                val hasPrivilegedAccess = isRootActive || RootShellEngine.isRootGranted() || PrivilegedFileEngine.isShizukuPermissionGranted()
+                val isRestricted = isAndroidDataOrObb && !hasPrivilegedAccess
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = if (searchQuery.isNotEmpty()) "NO MATCHING FILES" else "FOLDER IS EMPTY",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = NothingTextSecondary
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Text(
+                            text = when {
+                                searchQuery.isNotEmpty() -> "NO MATCHING FILES"
+                                isRestricted -> "FOLDER RESTRICTED"
+                                else -> "FOLDER IS EMPTY"
+                            },
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NothingWhite
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (isRestricted) {
+                            Text(
+                                text = "Restricted by Android Scoped Storage. Grant Root or Shizuku permission to browse and modify files.",
+                                fontFamily = FontFamily.Default,
+                                fontSize = 11.sp,
+                                color = NothingTextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(NothingRed)
+                                        .clickable {
+                                            scope.launch {
+                                                isRootActive = RootShellEngine.isRootAvailable(forceCheck = true)
+                                                refreshFiles()
+                                            }
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    Text("GRANT ROOT", fontFamily = FontFamily.Monospace, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = NothingWhite)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(NothingSurfaceElevated)
+                                        .border(1.dp, NothingBorder, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            PrivilegedFileEngine.requestShizukuPermission()
+                                            refreshFiles()
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                                ) {
+                                    Text("GRANT SHIZUKU", fontFamily = FontFamily.Monospace, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = NothingWhite)
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = when {
+                                    searchQuery.isNotEmpty() -> "Try a different search query"
+                                    isAndroidDataOrObb -> "Accessible via ${if (isRootActive || RootShellEngine.isRootGranted()) "Root (KernelSU)" else "Shizuku"}. Folder is empty."
+                                    else -> "No items in this directory"
+                                },
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = NothingTextSecondary,
+                                textAlign = TextAlign.Center
+                            )
+                            if (!showHidden) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Tip: Enable 'Show hidden files' in 3-dot menu to view .nomedia",
+                                    fontFamily = FontFamily.Default,
+                                    fontSize = 10.sp,
+                                    color = NothingTextSecondary.copy(alpha = 0.7f),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
                 }
             } else {
                 when (activeViewMode) {
                     ViewMode.GRID -> {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
+                            columns = GridCells.Adaptive(minSize = (85.dp * zoomScale).coerceIn(38.dp, 400.dp)),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            verticalArrangement = Arrangement.spacedBy((6 * zoomScale).coerceIn(2f, 24f).dp),
+                            horizontalArrangement = Arrangement.spacedBy((6 * zoomScale).coerceIn(2f, 24f).dp)
                         ) {
                             items(displayFiles, key = { it.path }) { file ->
                                 val isSelected = selectedFiles.any { it.path == file.path }
                                 val isPinned = PinManager.isPinned(context, file.path)
                                 FileExplorerGridItem(
                                     file = file,
+                                    zoomScale = zoomScale,
                                     isPinned = isPinned,
                                     isSelected = isSelected,
                                     isSelectionMode = isSelectionMode,
@@ -1289,18 +1521,19 @@ fun FileExplorerScreen(
 
                     ViewMode.GALLERY -> {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
+                            columns = GridCells.Adaptive(minSize = (130.dp * zoomScale).coerceIn(60.dp, 500.dp)),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy((8 * zoomScale).coerceIn(2f, 28f).dp),
+                            horizontalArrangement = Arrangement.spacedBy((8 * zoomScale).coerceIn(2f, 28f).dp)
                         ) {
                             items(displayFiles, key = { it.path }) { file ->
                                 val isSelected = selectedFiles.any { it.path == file.path }
                                 val isPinned = PinManager.isPinned(context, file.path)
                                 FileExplorerGalleryItem(
                                     file = file,
+                                    zoomScale = zoomScale,
                                     isPinned = isPinned,
                                     isSelected = isSelected,
                                     isSelectionMode = isSelectionMode,
@@ -1313,18 +1546,19 @@ fun FileExplorerScreen(
 
                     ViewMode.COLUMNED -> {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
+                            columns = GridCells.Adaptive(minSize = (130.dp * zoomScale).coerceIn(60.dp, 500.dp)),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy((4 * zoomScale).coerceIn(1f, 16f).dp),
+                            horizontalArrangement = Arrangement.spacedBy((4 * zoomScale).coerceIn(1f, 16f).dp)
                         ) {
                             items(displayFiles, key = { it.path }) { file ->
                                 val isSelected = selectedFiles.any { it.path == file.path }
                                 val isPinned = PinManager.isPinned(context, file.path)
                                 FileExplorerCompactRow(
                                     file = file,
+                                    zoomScale = zoomScale,
                                     isPinned = isPinned,
                                     isSelected = isSelected,
                                     isSelectionMode = isSelectionMode,
@@ -1340,7 +1574,7 @@ fun FileExplorerScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(if (activeViewMode == ViewMode.COMPACT) 2.dp else 4.dp)
+                            verticalArrangement = Arrangement.spacedBy(((if (activeViewMode == ViewMode.COMPACT) 2f else 4f) * zoomScale).coerceIn(1f, 16f).dp)
                         ) {
                             items(displayFiles, key = { it.path }) { file ->
                                 val isSelected = selectedFiles.any { it.path == file.path }
@@ -1350,6 +1584,7 @@ fun FileExplorerScreen(
                                 FileExplorerRowItem(
                                     file = file,
                                     viewMode = activeViewMode,
+                                    zoomScale = zoomScale,
                                     isPinned = isPinned,
                                     tag = fileTag,
                                     isSelected = isSelected,
@@ -1364,7 +1599,36 @@ fun FileExplorerScreen(
                 }
             }
 
-
+            // Dynamic Live Floating Zoom Indicator (Shows smooth real-time percentage during pinch; no fixed presets)
+            if (showZoomHud) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(NothingBlack)
+                            .border(1.dp, NothingBorder, RoundedCornerShape(16.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Canvas(modifier = Modifier.size(6.dp)) {
+                                drawCircle(color = LedOnRed)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${(zoomScale * 100).toInt()}%",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = NothingWhite
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // 3. Persistent Bottom Action Bar (Screenshots 1 & 3)
@@ -1406,7 +1670,10 @@ fun FileExplorerScreen(
         itemMenuFile?.let { item ->
             DropdownMenu(
                 expanded = true,
-                onDismissRequest = { itemMenuFile = null }
+                onDismissRequest = { itemMenuFile = null },
+                modifier = Modifier
+                    .background(NothingBlack)
+                    .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
             ) {
                 DropdownMenuItem(
                     text = {
@@ -1475,6 +1742,22 @@ fun FileExplorerScreen(
                     onClick = {
                         checksumFile = item
                         itemMenuFile = null
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Archive, contentDescription = null, tint = NothingWhite, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Archive...", fontFamily = FontFamily.Monospace)
+                        }
+                    },
+                    onClick = {
+                        val file = item
+                        itemMenuFile = null
+                        selectedFiles.clear()
+                        selectedFiles.add(file)
+                        showCreateArchiveDialog = true
                     }
                 )
                 if (item.isArchive) {
@@ -2107,9 +2390,19 @@ fun FileExplorerScreen(
             targetFiles = selectedFiles.toList(),
             currentDirectory = currentTab.path,
             onDismiss = { showCreateArchiveDialog = false },
-            onArchiveCreated = {
+            onQueueToClipboard = { config ->
+                val files = selectedFiles.toList()
+                val count = files.size
+                clipboardTasks.add(
+                    ClipboardTask(
+                        action = ClipboardAction.ARCHIVE,
+                        files = files,
+                        archiveConfig = config
+                    )
+                )
                 selectedFiles.clear()
-                refreshFiles()
+                showCreateArchiveDialog = false
+                Toast.makeText(context, "Queued archive '${config.archiveName}' ($count items) to clipboard", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -2304,6 +2597,7 @@ fun FileExplorerScreen(
 private fun FileExplorerRowItem(
     file: FileItem,
     viewMode: ViewMode = ViewMode.DETAILED,
+    zoomScale: Float = 1.0f,
     isPinned: Boolean,
     tag: String?,
     isSelected: Boolean,
@@ -2315,6 +2609,14 @@ private fun FileExplorerRowItem(
     val isCompact = viewMode == ViewMode.COMPACT
     val isMinimal = viewMode == ViewMode.MINIMAL
     val isWrapped = viewMode == ViewMode.WRAPPED
+    val context = LocalContext.current
+
+    val vertPadding = ((if (isCompact) 3f else if (isMinimal) 4f else 6f) * zoomScale).coerceIn(1f, 32f).dp
+    val baseIconSize = if (isCompact) 26.dp else if (isMinimal) 24.dp else 36.dp
+    val scaledIconSize = (baseIconSize.value * zoomScale).coerceIn(12f, 160f).dp
+    val titleFontSize = ((if (isCompact) 13f else 14f) * zoomScale).coerceIn(9f, 28f).sp
+    val subtitleFontSize = (10f * zoomScale).coerceIn(7f, 20f).sp
+    val countFontSize = ((if (isCompact) 10f else 11f) * zoomScale).coerceIn(7f, 22f).sp
 
     Row(
         modifier = Modifier
@@ -2329,97 +2631,37 @@ private fun FileExplorerRowItem(
                 .clip(RoundedCornerShape(6.dp))
                 .clickable(onClick = onToggleSelect)
                 .padding(
-                    start = if (isCompact) 6.dp else 8.dp,
-                    end = if (isCompact) 4.dp else 6.dp,
-                    top = if (isCompact) 3.dp else if (isMinimal) 4.dp else 6.dp,
-                    bottom = if (isCompact) 3.dp else if (isMinimal) 4.dp else 6.dp
+                    start = ((if (isCompact) 6f else 8f) * zoomScale.coerceIn(0.6f, 2.0f)).dp,
+                    end = ((if (isCompact) 4f else 6f) * zoomScale.coerceIn(0.6f, 2.0f)).dp,
+                    top = vertPadding,
+                    bottom = vertPadding
                 ),
             contentAlignment = Alignment.Center
         ) {
-            if (isSelectionMode) {
-                Canvas(modifier = Modifier.size(20.dp)) {
-                    drawCircle(color = if (isSelected) LedOnRed else NothingBorder)
-                }
-            } else {
-                // Folder or File Preview Thumbnail with interactive selection target
-                Box(
-                    modifier = Modifier
-                        .size(if (isCompact) 26.dp else if (isMinimal) 24.dp else 36.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (isSelected) NothingSurfaceElevated else NothingSurface),
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        file.isDirectory -> {
+            Box(contentAlignment = Alignment.TopStart) {
+                FileThumbnailView(
+                    file = file,
+                    modifier = Modifier.size(scaledIconSize),
+                    iconScale = zoomScale * (if (isCompact || isMinimal) 0.8f else 1.0f),
+                    isPinned = isPinned
+                )
+                if (isSelectionMode || isSelected) {
+                    Box(
+                        modifier = Modifier
+                            .size((16f * zoomScale).coerceIn(10f, 24f).dp)
+                            .align(Alignment.TopStart)
+                            .clip(CircleShape)
+                            .background(if (isSelected) LedOnRed else NothingBlack.copy(alpha = 0.8f))
+                            .border(1.dp, if (isSelected) LedOnRed else NothingBorder, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
                             Icon(
-                                imageVector = Icons.Default.Folder,
-                                contentDescription = "Folder",
-                                tint = NothingWhite,
-                                modifier = Modifier.size(if (isCompact || isMinimal) 18.dp else 24.dp)
-                            )
-                            if (isPinned) {
-                                Icon(
-                                    imageVector = Icons.Default.PushPin,
-                                    contentDescription = "Pinned",
-                                    tint = NothingRed,
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .align(Alignment.TopEnd)
-                                )
-                            }
-                        }
-                        file.isImage || file.isVideo -> {
-                            AsyncImage(
-                                model = file.path,
+                                imageVector = Icons.Default.Check,
                                 contentDescription = null,
-                                modifier = Modifier.size(if (isCompact || isMinimal) 26.dp else 36.dp),
-                                contentScale = ContentScale.Crop
+                                tint = NothingWhite,
+                                modifier = Modifier.size((10f * zoomScale).coerceIn(6f, 16f).dp)
                             )
-                            if (isPinned) {
-                                Icon(
-                                    imageVector = Icons.Default.PushPin,
-                                    contentDescription = "Pinned",
-                                    tint = NothingRed,
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .align(Alignment.TopEnd)
-                                )
-                            }
-                        }
-                        file.isAudio -> {
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = "Audio",
-                                tint = NothingRed,
-                                modifier = Modifier.size(if (isCompact || isMinimal) 16.dp else 20.dp)
-                            )
-                        }
-                        file.isArchive -> {
-                            Icon(
-                                imageVector = Icons.Default.Archive,
-                                contentDescription = "Archive",
-                                tint = NothingRed,
-                                modifier = Modifier.size(if (isCompact || isMinimal) 16.dp else 20.dp)
-                            )
-                        }
-                        else -> {
-                            Text(
-                                text = file.dotMatrixTypeTag,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = if (isCompact || isMinimal) 8.sp else 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = NothingRed
-                            )
-                        }
-                    }
-                    if (isSelected) {
-                        Canvas(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .align(Alignment.TopStart)
-                                .padding(1.dp)
-                        ) {
-                            drawCircle(color = LedOnRed)
                         }
                     }
                 }
@@ -2437,9 +2679,9 @@ private fun FileExplorerRowItem(
                 )
                 .padding(
                     start = 4.dp,
-                    end = if (isCompact) 6.dp else 8.dp,
-                    top = if (isCompact) 3.dp else if (isMinimal) 4.dp else 6.dp,
-                    bottom = if (isCompact) 3.dp else if (isMinimal) 4.dp else 6.dp
+                    end = ((if (isCompact) 6f else 8f) * zoomScale.coerceIn(0.6f, 2.0f)).dp,
+                    top = vertPadding,
+                    bottom = vertPadding
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -2449,12 +2691,12 @@ private fun FileExplorerRowItem(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
                         .background(NothingBorder)
-                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                        .padding(horizontal = (5f * zoomScale).coerceIn(3f, 12f).dp, vertical = (2f * zoomScale).coerceIn(1f, 6f).dp)
                 ) {
                     Text(
                         text = tag.uppercase(),
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 9.sp,
+                        fontSize = (9f * zoomScale).coerceIn(6f, 18f).sp,
                         fontWeight = FontWeight.Bold,
                         color = NothingRed
                     )
@@ -2464,20 +2706,48 @@ private fun FileExplorerRowItem(
 
             // Name and Subtitle
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.name,
-                    fontFamily = FontFamily.Default,
-                    fontWeight = FontWeight.Normal,
-                    fontSize = if (isCompact) 13.sp else 14.sp,
-                    color = if (isSelected) NothingRed else NothingWhite,
-                    maxLines = if (isWrapped) 4 else 1,
-                    overflow = if (isWrapped) TextOverflow.Clip else TextOverflow.Ellipsis
+                val isPackageFolder = file.isDirectory && file.name.contains(".") && (
+                    file.path.contains("/Android/data", ignoreCase = true) ||
+                    file.path.contains("/Android/obb", ignoreCase = true) ||
+                    file.path.contains("/Android/media", ignoreCase = true)
                 )
+                val appLabel = if (isPackageFolder) ThumbnailEngine.getAppLabel(context, file.name) else null
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = file.name,
+                        fontFamily = FontFamily.Default,
+                        fontWeight = FontWeight.Normal,
+                        fontSize = titleFontSize,
+                        color = if (isSelected) NothingRed else NothingWhite,
+                        maxLines = if (isWrapped) 4 else 1,
+                        overflow = if (isWrapped) TextOverflow.Clip else TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (!appLabel.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(NothingRed.copy(alpha = 0.15f))
+                                .border(0.6.dp, NothingRed.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = appLabel ?: "",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = (9f * zoomScale).coerceIn(7f, 13f).sp,
+                                fontWeight = FontWeight.Bold,
+                                color = NothingWhite
+                            )
+                        }
+                    }
+                }
                 if (viewMode == ViewMode.DETAILED) {
                     Text(
                         text = "${file.formattedDate}   ${file.permissions}",
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
+                        fontSize = subtitleFontSize,
                         color = NothingTextSecondary,
                         maxLines = 1
                     )
@@ -2489,7 +2759,7 @@ private fun FileExplorerRowItem(
                 Text(
                     text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = if (isCompact) 10.sp else 11.sp,
+                    fontSize = countFontSize,
                     color = NothingTextSecondary
                 )
             }
@@ -2501,17 +2771,24 @@ private fun FileExplorerRowItem(
 @Composable
 private fun FileExplorerGridItem(
     file: FileItem,
+    zoomScale: Float = 1.0f,
     isPinned: Boolean,
     isSelected: Boolean,
     isSelectionMode: Boolean,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit
 ) {
+    val cardHeight = (115f * zoomScale).coerceIn(50f, 380f).dp
+    val iconSize = (42f * zoomScale).coerceIn(18f, 180f).dp
+    val titleFontSize = (11f * zoomScale).coerceIn(7.5f, 24f).sp
+    val subtitleFontSize = (9f * zoomScale).coerceIn(6f, 18f).sp
+    val context = LocalContext.current
+
     NothingCard(
         modifier = Modifier
             .fillMaxWidth()
-            .height(115.dp),
-        shape = RoundedCornerShape(8.dp),
+            .height(cardHeight),
+        shape = RoundedCornerShape((8f * zoomScale).coerceIn(4f, 16f).dp),
         backgroundColor = if (isSelected) NothingSurfaceElevated else NothingSurface,
         borderColor = if (isSelected) NothingRed else NothingBorder
     ) {
@@ -2519,19 +2796,26 @@ private fun FileExplorerGridItem(
             modifier = Modifier
                 .fillMaxSize()
                 .combinedClickable(onClick = onOpen, onLongClick = onToggleSelect)
-                .padding(8.dp)
+                .padding((8f * zoomScale).coerceIn(3f, 16f).dp)
         ) {
-            // Left/Top-left dedicated selection toggle target
+            // Left/Top-left dedicated selection toggle target (Always shows checkmark when selected)
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size((24f * zoomScale).coerceIn(16f, 32f).dp)
                     .align(Alignment.TopStart)
                     .clip(CircleShape)
+                    .background(if (isSelected) LedOnRed else if (isSelectionMode) NothingBlack.copy(alpha = 0.7f) else Color.Transparent)
+                    .border(1.dp, if (isSelected) LedOnRed else if (isSelectionMode) NothingBorder else Color.Transparent, CircleShape)
                     .clickable(onClick = onToggleSelect),
                 contentAlignment = Alignment.Center
             ) {
-                Canvas(modifier = Modifier.size(14.dp)) {
-                    drawCircle(color = if (isSelected) LedOnRed else if (isSelectionMode) NothingBorder else Color.Transparent)
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = NothingWhite,
+                        modifier = Modifier.size((12f * zoomScale).coerceIn(8f, 18f).dp)
+                    )
                 }
             }
 
@@ -2540,7 +2824,7 @@ private fun FileExplorerGridItem(
                     imageVector = Icons.Default.PushPin,
                     contentDescription = "Pinned",
                     tint = NothingRed,
-                    modifier = Modifier.size(12.dp).align(Alignment.TopEnd)
+                    modifier = Modifier.size((12f * zoomScale).coerceIn(8f, 22f).dp).align(Alignment.TopEnd)
                 )
             }
 
@@ -2549,51 +2833,27 @@ private fun FileExplorerGridItem(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                if (file.isDirectory) {
-                    Icon(
-                        imageVector = Icons.Default.Folder,
-                        contentDescription = null,
-                        tint = NothingWhite,
-                        modifier = Modifier.size(40.dp)
-                    )
-                } else if (file.isImage || file.isVideo) {
-                    AsyncImage(
-                        model = file.path,
-                        contentDescription = null,
-                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(6.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                } else if (file.isArchive) {
-                    Icon(
-                        imageVector = Icons.Default.Archive,
-                        contentDescription = "Archive",
-                        tint = NothingRed,
-                        modifier = Modifier.size(40.dp)
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(NothingBlack),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = file.dotMatrixTypeTag,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            color = NothingRed
-                        )
-                    }
-                }
+                FileThumbnailView(
+                    file = file,
+                    modifier = Modifier.size(iconSize),
+                    iconScale = zoomScale * 1.3f,
+                    isPinned = false
+                )
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height((6f * zoomScale).coerceIn(2f, 16f).dp))
+
+                val isPackageFolder = file.isDirectory && file.name.contains(".") && (
+                    file.path.contains("/Android/data", ignoreCase = true) ||
+                    file.path.contains("/Android/obb", ignoreCase = true) ||
+                    file.path.contains("/Android/media", ignoreCase = true)
+                )
+                val appLabel = if (isPackageFolder) ThumbnailEngine.getAppLabel(context, file.name) else null
 
                 Text(
-                    text = file.name,
+                    text = appLabel ?: file.name,
                     fontFamily = FontFamily.Default,
-                    fontSize = 11.sp,
+                    fontWeight = if (appLabel != null) FontWeight.SemiBold else FontWeight.Normal,
+                    fontSize = titleFontSize,
                     color = if (isSelected) NothingRed else NothingWhite,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -2601,11 +2861,13 @@ private fun FileExplorerGridItem(
                 )
 
                 Text(
-                    text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
+                    text = if (appLabel != null) file.name else (if (file.isDirectory) "(${file.childCount})" else file.formattedSize),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 9.sp,
+                    fontSize = subtitleFontSize,
                     color = NothingTextSecondary,
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -2616,18 +2878,23 @@ private fun FileExplorerGridItem(
 @Composable
 private fun FileExplorerGalleryItem(
     file: FileItem,
+    zoomScale: Float = 1.0f,
     isPinned: Boolean,
     isSelected: Boolean,
     isSelectionMode: Boolean,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit
 ) {
+    val cardHeight = (145f * zoomScale).coerceIn(60f, 480f).dp
+    val titleFontSize = (11f * zoomScale).coerceIn(7.5f, 24f).sp
+    val subtitleFontSize = (9f * zoomScale).coerceIn(6f, 18f).sp
+
     NothingCard(
         modifier = Modifier
             .fillMaxWidth()
-            .height(145.dp),
-        shape = RoundedCornerShape(10.dp),
-        backgroundColor = NothingSurface,
+            .height(cardHeight),
+        shape = RoundedCornerShape((10f * zoomScale).coerceIn(4f, 18f).dp),
+        backgroundColor = NothingBlack,
         borderColor = if (isSelected) NothingRed else NothingBorder
     ) {
         Box(
@@ -2635,37 +2902,32 @@ private fun FileExplorerGalleryItem(
                 .fillMaxSize()
                 .combinedClickable(onClick = onOpen, onLongClick = onToggleSelect)
         ) {
-            if (file.isImage || file.isVideo) {
-                AsyncImage(
-                    model = file.path,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (file.isDirectory) Icons.Default.Folder else if (file.isArchive) Icons.Default.Archive else Icons.Default.Description,
-                        contentDescription = null,
-                        tint = if (file.isArchive) NothingRed else NothingWhite,
-                        modifier = Modifier.size(52.dp)
-                    )
-                }
-            }
+            FileThumbnailView(
+                file = file,
+                modifier = Modifier.fillMaxSize(),
+                iconScale = zoomScale * 1.8f,
+                isPinned = false
+            )
 
-            // Top-left selection button
+            // Top-left selection button (Always shows checkmark when selected)
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .size(28.dp)
+                    .padding((6f * zoomScale).coerceIn(3f, 12f).dp)
+                    .size((24f * zoomScale).coerceIn(16f, 32f).dp)
                     .clip(CircleShape)
-                    .background(if (isSelected || isSelectionMode) NothingBlack.copy(alpha = 0.6f) else Color.Transparent)
+                    .background(if (isSelected) LedOnRed else if (isSelectionMode) NothingBlack.copy(alpha = 0.7f) else Color.Transparent)
+                    .border(1.dp, if (isSelected) LedOnRed else if (isSelectionMode) NothingBorder else Color.Transparent, CircleShape)
                     .clickable(onClick = onToggleSelect),
                 contentAlignment = Alignment.Center
             ) {
-                Canvas(modifier = Modifier.size(14.dp)) {
-                    drawCircle(color = if (isSelected) LedOnRed else if (isSelectionMode) NothingBorder else Color.Transparent)
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = NothingWhite,
+                        modifier = Modifier.size((12f * zoomScale).coerceIn(8f, 18f).dp)
+                    )
                 }
             }
 
@@ -2679,7 +2941,7 @@ private fun FileExplorerGalleryItem(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
                         )
                     )
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .padding(horizontal = (8f * zoomScale).coerceIn(4f, 16f).dp, vertical = (6f * zoomScale).coerceIn(3f, 12f).dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2689,7 +2951,7 @@ private fun FileExplorerGalleryItem(
                     Text(
                         text = file.name,
                         fontFamily = FontFamily.Default,
-                        fontSize = 11.sp,
+                        fontSize = titleFontSize,
                         fontWeight = FontWeight.Medium,
                         color = NothingWhite,
                         maxLines = 1,
@@ -2700,7 +2962,7 @@ private fun FileExplorerGalleryItem(
                     Text(
                         text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 9.sp,
+                        fontSize = subtitleFontSize,
                         color = NothingTextSecondary
                     )
                 }
@@ -2711,7 +2973,7 @@ private fun FileExplorerGalleryItem(
                     imageVector = Icons.Default.PushPin,
                     contentDescription = null,
                     tint = NothingRed,
-                    modifier = Modifier.size(14.dp).align(Alignment.TopEnd).padding(4.dp)
+                    modifier = Modifier.size((14f * zoomScale).coerceIn(8f, 22f).dp).align(Alignment.TopEnd).padding(4.dp)
                 )
             }
         }
@@ -2722,17 +2984,24 @@ private fun FileExplorerGalleryItem(
 @Composable
 private fun FileExplorerCompactRow(
     file: FileItem,
+    zoomScale: Float = 1.0f,
     isPinned: Boolean,
     isSelected: Boolean,
     isSelectionMode: Boolean,
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit
 ) {
+    val rowHeight = (44f * zoomScale).coerceIn(24f, 140f).dp
+    val iconWidth = (40f * zoomScale).coerceIn(20f, 100f).dp
+    val iconSize = (22f * zoomScale).coerceIn(12f, 80f).dp
+    val titleFontSize = (12f * zoomScale).coerceIn(8f, 24f).sp
+    val countFontSize = (10f * zoomScale).coerceIn(7f, 20f).sp
+
     NothingCard(
         modifier = Modifier
             .fillMaxWidth()
-            .height(44.dp),
-        shape = RoundedCornerShape(6.dp),
+            .height(rowHeight),
+        shape = RoundedCornerShape((6f * zoomScale).coerceIn(3f, 12f).dp),
         backgroundColor = if (isSelected) NothingSurfaceElevated else NothingSurface,
         borderColor = if (isSelected) NothingRed else NothingBorder
     ) {
@@ -2740,25 +3009,41 @@ private fun FileExplorerCompactRow(
             modifier = Modifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Left touch area dedicated to selection
+            // Left touch area dedicated to selection (Thumbnail always visible)
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .width(40.dp)
+                    .width(iconWidth)
                     .clickable(onClick = onToggleSelect),
                 contentAlignment = Alignment.Center
             ) {
-                if (isSelectionMode || isSelected) {
-                    Canvas(modifier = Modifier.size(14.dp)) {
-                        drawCircle(color = if (isSelected) LedOnRed else NothingBorder)
-                    }
-                } else {
-                    Icon(
-                        imageVector = if (file.isDirectory) Icons.Default.Folder else if (file.isArchive) Icons.Default.Archive else Icons.Default.Description,
-                        contentDescription = null,
-                        tint = if (file.isDirectory) NothingWhite else NothingRed,
-                        modifier = Modifier.size(18.dp)
+                Box(contentAlignment = Alignment.TopStart) {
+                    FileThumbnailView(
+                        file = file,
+                        modifier = Modifier.size(iconSize),
+                        iconScale = zoomScale * 0.8f,
+                        isPinned = isPinned
                     )
+                    if (isSelectionMode || isSelected) {
+                        Box(
+                            modifier = Modifier
+                                .size((14f * zoomScale).coerceIn(9f, 20f).dp)
+                                .align(Alignment.TopStart)
+                                .clip(CircleShape)
+                                .background(if (isSelected) LedOnRed else NothingBlack.copy(alpha = 0.8f))
+                                .border(1.dp, if (isSelected) LedOnRed else NothingBorder, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = NothingWhite,
+                                    modifier = Modifier.size((9f * zoomScale).coerceIn(6f, 14f).dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2768,13 +3053,13 @@ private fun FileExplorerCompactRow(
                     .weight(1f)
                     .fillMaxHeight()
                     .combinedClickable(onClick = onOpen, onLongClick = onToggleSelect)
-                    .padding(end = 8.dp),
+                    .padding(end = (8f * zoomScale).coerceIn(4f, 16f).dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = file.name,
                     fontFamily = FontFamily.Default,
-                    fontSize = 12.sp,
+                    fontSize = titleFontSize,
                     color = if (isSelected) NothingRed else NothingWhite,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -2783,7 +3068,7 @@ private fun FileExplorerCompactRow(
                 Text(
                     text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
+                    fontSize = countFontSize,
                     color = NothingTextSecondary
                 )
             }
@@ -2890,7 +3175,8 @@ fun ClipboardTasksDropdown(
         onDismissRequest = onDismissRequest,
         modifier = Modifier
             .widthIn(min = 280.dp, max = 340.dp)
-            .background(NothingSurface)
+            .background(NothingBlack)
+            .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
             .padding(6.dp)
     ) {
         // Header showing count & target destination
@@ -2924,7 +3210,7 @@ fun ClipboardTasksDropdown(
         tasks.asReversed().forEachIndexed { index, task ->
             val taskNum = tasks.size - index
             val actionColor = when (task.action) {
-                ClipboardAction.EXTRACT -> NothingRed
+                ClipboardAction.EXTRACT, ClipboardAction.ARCHIVE -> NothingRed
                 ClipboardAction.MOVE -> NothingWhite
                 ClipboardAction.COPY -> NothingWhite
             }
@@ -2959,8 +3245,17 @@ fun ClipboardTasksDropdown(
                             fontWeight = FontWeight.SemiBold,
                             color = NothingTextSecondary
                         )
+                        val descriptionText = when (task.action) {
+                            ClipboardAction.ARCHIVE -> {
+                                val arcName = task.archiveConfig?.archiveName ?: "Archive.zip"
+                                "$arcName (${task.files.size} items)"
+                            }
+                            else -> {
+                                if (task.files.size == 1) task.files.first().name else "${task.files.first().name} (+${task.files.size - 1})"
+                            }
+                        }
                         Text(
-                            text = if (task.files.size == 1) task.files.first().name else "${task.files.first().name} (+${task.files.size - 1})",
+                            text = descriptionText,
                             fontFamily = FontFamily.Default,
                             fontSize = 11.sp,
                             color = NothingWhite,

@@ -85,6 +85,10 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.androidx.media3.exoplayer)
 
+    // Shizuku API for privileged ADB operations (Android/data, Android/obb)
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+
     // Tooling
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

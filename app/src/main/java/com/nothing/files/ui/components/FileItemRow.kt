@@ -122,36 +122,10 @@ fun FileItemRow(
                     }
                 }
             } else {
-                // Dot Matrix Type Badge
-                NothingCard(
-                    modifier = Modifier.size(38.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    backgroundColor = NothingSurfaceElevated,
-                    borderColor = badgeColor.copy(alpha = 0.6f)
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (file.isDirectory) {
-                            Icon(
-                                imageVector = Icons.Default.Folder,
-                                contentDescription = "Folder",
-                                tint = NothingWhite,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        } else {
-                            Text(
-                                text = file.dotMatrixTypeTag,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 10.sp,
-                                letterSpacing = 0.8.sp,
-                                color = badgeColor
-                            )
-                        }
-                    }
-                }
+                FileThumbnailView(
+                    file = file,
+                    modifier = Modifier.size(38.dp)
+                )
             }
 
             Spacer(modifier = Modifier.width(12.dp))

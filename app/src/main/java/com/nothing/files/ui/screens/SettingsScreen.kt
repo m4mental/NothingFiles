@@ -37,10 +37,12 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.nothing.files.engine.PrivilegedFileEngine
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -98,6 +100,14 @@ fun SettingsScreen(
     var showAutoTasksDialog by remember { mutableStateOf(false) }
     var showComponentsDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+
+    var currentPrivilegeMode by remember { mutableStateOf(PrivilegedFileEngine.getPrivilegeMode(context)) }
+    var showPrivilegeDialog by remember { mutableStateOf(false) }
+    var activePrivilegeTitle by remember { mutableStateOf("Detecting...") }
+
+    LaunchedEffect(currentPrivilegeMode) {
+        activePrivilegeTitle = PrivilegedFileEngine.getActivePrivilegeTitle(context)
+    }
 
     BackHandler {
         onNavigateBack()
@@ -193,7 +203,14 @@ fun SettingsScreen(
                 onClick = { showComponentsDialog = true }
             )
 
-            // 8. ABOUT
+            // 8. PRIVILEGE & ACCESS MODE
+            SettingsCategoryRow(
+                title = "PRIVILEGE & ACCESS MODE",
+                subtitle = "${currentPrivilegeMode.title} • $activePrivilegeTitle",
+                onClick = { showPrivilegeDialog = true }
+            )
+
+            // 9. ABOUT
             SettingsCategoryRow(
                 title = "ABOUT",
                 subtitle = "Version: 6.71.14 B26090320 arm64\nAuthor: Hootan Parsa & Antigravity IDE",
@@ -516,6 +533,83 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = { showAboutDialog = false }) {
                     Text("OK", color = NothingRed, fontFamily = FontFamily.Monospace)
+                }
+            }
+        )
+    }
+
+    // PRIVILEGE MODE DIALOG
+    if (showPrivilegeDialog) {
+        AlertDialog(
+            onDismissRequest = { showPrivilegeDialog = false },
+            containerColor = NothingSurface,
+            title = {
+                Text(
+                    text = "PRIVILEGE & ACCESS MODE",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = NothingWhite
+                )
+            },
+            text = {
+                Column {
+                    PrivilegedFileEngine.PrivilegeMode.values().forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    currentPrivilegeMode = mode
+                                    PrivilegedFileEngine.setPrivilegeMode(context, mode)
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = currentPrivilegeMode == mode,
+                                onClick = {
+                                    currentPrivilegeMode = mode
+                                    PrivilegedFileEngine.setPrivilegeMode(context, mode)
+                                },
+                                colors = RadioButtonDefaults.colors(
+                                    selectedColor = LedOnRed,
+                                    unselectedColor = NothingTextSecondary
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = mode.title,
+                                    fontFamily = FontFamily.Default,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 14.sp,
+                                    color = NothingWhite
+                                )
+                                Text(
+                                    text = mode.subtitle,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = NothingTextSecondary
+                                )
+                            }
+                        }
+                    }
+
+                    if (!PrivilegedFileEngine.isShizukuPermissionGranted() && PrivilegedFileEngine.isShizukuRunning()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(
+                            onClick = {
+                                PrivilegedFileEngine.requestShizukuPermission()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("REQUEST SHIZUKU PERMISSION", color = LedOnRed, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPrivilegeDialog = false }) {
+                    Text("DONE", color = NothingWhite, fontFamily = FontFamily.Monospace)
                 }
             }
         )

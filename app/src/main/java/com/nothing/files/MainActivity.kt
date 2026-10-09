@@ -352,6 +352,12 @@ fun MainDrawerAndContentRouter() {
                     HomeScreen(
                         onOpenDrawer = { scope.launch { drawerState.open() } },
                         onNavigateToStorage = { currentScreen = CurrentScreen.Explorer(internalPath) },
+                        onNavigateToPath = { path ->
+                            if (explorerTabs.isNotEmpty()) {
+                                explorerTabs[activeTabIndex] = explorerTabs[activeTabIndex].navigateTo(path)
+                            }
+                            currentScreen = CurrentScreen.Explorer(path)
+                        },
                         onOpenCategory = { type, title ->
                             currentScreen = CurrentScreen.CategoryFiles(type, title)
                         },

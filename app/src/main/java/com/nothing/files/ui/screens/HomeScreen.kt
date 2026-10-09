@@ -1,6 +1,7 @@
 package com.nothing.files.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -74,6 +76,7 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     onOpenDrawer: () -> Unit,
     onNavigateToStorage: () -> Unit,
+    onNavigateToPath: (String) -> Unit = {},
     onOpenCategory: (NavItemType, String) -> Unit,
     onOpenAppManager: () -> Unit,
     onOpenStorageAnalyzer: () -> Unit,
@@ -168,24 +171,39 @@ fun HomeScreen(
 
                     DropdownMenu(
                         expanded = showTopMenu,
-                        onDismissRequest = { showTopMenu = false }
+                        onDismissRequest = { showTopMenu = false },
+                        modifier = Modifier
+                            .background(NothingBlack)
+                            .border(1.dp, NothingBorder, RoundedCornerShape(12.dp))
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Storage Analyzer", fontFamily = FontFamily.Monospace) },
+                            text = { Text("Storage Analyzer", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                            colors = androidx.compose.material3.MenuDefaults.itemColors(
+                                textColor = NothingWhite,
+                                leadingIconColor = NothingWhite
+                            ),
                             onClick = {
                                 showTopMenu = false
                                 onOpenStorageAnalyzer()
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Web Share (HTTP)", fontFamily = FontFamily.Monospace) },
+                            text = { Text("Web Share (HTTP)", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                            colors = androidx.compose.material3.MenuDefaults.itemColors(
+                                textColor = NothingWhite,
+                                leadingIconColor = NothingWhite
+                            ),
                             onClick = {
                                 showTopMenu = false
                                 onOpenWebShare()
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("App Manager", fontFamily = FontFamily.Monospace) },
+                            text = { Text("App Manager", fontFamily = FontFamily.Monospace, color = NothingWhite) },
+                            colors = androidx.compose.material3.MenuDefaults.itemColors(
+                                textColor = NothingWhite,
+                                leadingIconColor = NothingWhite
+                            ),
                             onClick = {
                                 showTopMenu = false
                                 onOpenAppManager()

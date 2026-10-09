@@ -14,22 +14,79 @@ data class ShellResult(
 
 object RootShellEngine {
 
-    suspend fun isRootAvailable(): Boolean = withContext(Dispatchers.IO) {
+    private var cachedRootAvailable: Boolean? = null
+    private var mountMasterFlag: String? = null
+    private var lastRootCheckTime: Long = 0L
+
+    fun isRootGranted(): Boolean = cachedRootAvailable == true
+
+    suspend fun isRootAvailable(forceCheck: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!forceCheck) {
+            if (cachedRootAvailable == true) return@withContext true
+            // If recently checked as false within 3 seconds, avoid hammering su prompt
+            if (cachedRootAvailable == false && (now - lastRootCheckTime < 3000L)) {
+                return@withContext false
+            }
+        }
+        lastRootCheckTime = now
+
         try {
+            // Priority 1: Check with -M (KernelSU-Next / Magisk global mount namespace)
+            val pM = Runtime.getRuntime().exec(arrayOf("su", "-M", "-c", "id"))
+            val readerM = BufferedReader(InputStreamReader(pM.inputStream))
+            val outputM = readerM.readLine() ?: ""
+            pM.waitFor()
+            if (pM.exitValue() == 0 && outputM.contains("uid=0")) {
+                mountMasterFlag = "-M"
+                cachedRootAvailable = true
+                return@withContext true
+            }
+
+            // Priority 2: Check with -mm
+            val pMm = Runtime.getRuntime().exec(arrayOf("su", "-mm", "-c", "id"))
+            val readerMm = BufferedReader(InputStreamReader(pMm.inputStream))
+            val outputMm = readerMm.readLine() ?: ""
+            pMm.waitFor()
+            if (pMm.exitValue() == 0 && outputMm.contains("uid=0")) {
+                mountMasterFlag = "-mm"
+                cachedRootAvailable = true
+                return@withContext true
+            }
+
+            // Priority 3: Standard su
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
             val reader = BufferedReader(InputStreamReader(process.inputStream))
             val output = reader.readLine() ?: ""
             process.waitFor()
-            output.contains("uid=0")
+            val ok = output.contains("uid=0")
+            if (ok) {
+                mountMasterFlag = ""
+                cachedRootAvailable = true
+            } else {
+                cachedRootAvailable = false
+            }
+            ok
         } catch (_: Exception) {
+            cachedRootAvailable = false
             false
         }
     }
 
     suspend fun executeCommand(command: String, runAsRoot: Boolean = true): ShellResult = withContext(Dispatchers.IO) {
         try {
-            val shell = if (runAsRoot) "su" else "sh"
-            val process = ProcessBuilder(shell, "-c", command)
+            val cmdArgs = if (runAsRoot) {
+                if (mountMasterFlag == null) isRootAvailable()
+                val flag = mountMasterFlag ?: ""
+                if (flag.isNotEmpty()) {
+                    arrayOf("su", flag, "-c", command)
+                } else {
+                    arrayOf("su", "-c", command)
+                }
+            } else {
+                arrayOf("sh", "-c", command)
+            }
+            val process = ProcessBuilder(*cmdArgs)
                 .redirectErrorStream(false)
                 .start()
 

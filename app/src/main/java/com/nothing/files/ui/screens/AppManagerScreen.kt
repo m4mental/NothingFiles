@@ -224,24 +224,11 @@ fun AppManagerScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                NothingCard(
-                                    modifier = Modifier.size(36.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                    backgroundColor = NothingSurfaceElevated,
-                                    borderColor = NothingBorder
-                                ) {
-                                    Box(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Android,
-                                            contentDescription = null,
-                                            tint = if (app.isSystemApp) NothingTextSecondary else NothingRed,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                }
+                                com.nothing.files.ui.components.AppIconThumbnailView(
+                                    packageName = app.packageName,
+                                    isSystemApp = app.isSystemApp,
+                                    size = 38.dp
+                                )
 
                                 Spacer(modifier = Modifier.width(10.dp))
 

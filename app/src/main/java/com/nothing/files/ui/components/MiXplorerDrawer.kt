@@ -33,15 +33,24 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import com.nothing.files.engine.PrivilegedFileEngine
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,6 +102,15 @@ fun MiXplorerDrawer(
 ) {
     var showMoreMenu by remember { mutableStateOf(false) }
     var sortAscending by remember { mutableStateOf(true) }
+
+    val context = LocalContext.current
+    var currentPrivilegeMode by remember { mutableStateOf(PrivilegedFileEngine.getPrivilegeMode(context)) }
+    var showPrivilegeDialog by remember { mutableStateOf(false) }
+    var activePrivilegeTitle by remember { mutableStateOf("Detecting...") }
+
+    LaunchedEffect(currentPrivilegeMode) {
+        activePrivilegeTitle = PrivilegedFileEngine.getActivePrivilegeTitle(context)
+    }
 
     Column(
         modifier = modifier
@@ -329,6 +347,122 @@ fun MiXplorerDrawer(
                     onLongClick = { onOpenInNewTab(NavItemType.RECENT_FILES, null) }
                 )
             }
+        }
+
+        HorizontalDivider(color = NothingBorder, thickness = 0.5.dp)
+
+        // Privilege Mode Row / Badge (Normal, Shizuku, Root, Auto)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showPrivilegeDialog = true }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(if (currentPrivilegeMode == PrivilegedFileEngine.PrivilegeMode.NORMAL) NothingTextSecondary else LedOnRed)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = currentPrivilegeMode.title.uppercase(),
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = NothingWhite
+                )
+                Text(
+                    text = activePrivilegeTitle,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = NothingTextSecondary
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.Security,
+                contentDescription = "Privilege Mode",
+                tint = if (currentPrivilegeMode == PrivilegedFileEngine.PrivilegeMode.NORMAL) NothingTextSecondary else LedOnRed,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+
+        if (showPrivilegeDialog) {
+            AlertDialog(
+                onDismissRequest = { showPrivilegeDialog = false },
+                containerColor = NothingSurface,
+                title = {
+                    Text(
+                        text = "PRIVILEGE MODE",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = NothingWhite
+                    )
+                },
+                text = {
+                    Column {
+                        PrivilegedFileEngine.PrivilegeMode.values().forEach { mode ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        currentPrivilegeMode = mode
+                                        PrivilegedFileEngine.setPrivilegeMode(context, mode)
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = currentPrivilegeMode == mode,
+                                    onClick = {
+                                        currentPrivilegeMode = mode
+                                        PrivilegedFileEngine.setPrivilegeMode(context, mode)
+                                    },
+                                    colors = RadioButtonDefaults.colors(
+                                        selectedColor = LedOnRed,
+                                        unselectedColor = NothingTextSecondary
+                                    )
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = mode.title,
+                                        fontFamily = FontFamily.Default,
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 14.sp,
+                                        color = NothingWhite
+                                    )
+                                    Text(
+                                        text = mode.subtitle,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = NothingTextSecondary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (!PrivilegedFileEngine.isShizukuPermissionGranted() && PrivilegedFileEngine.isShizukuRunning()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(
+                                onClick = {
+                                    PrivilegedFileEngine.requestShizukuPermission()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("REQUEST SHIZUKU PERMISSION", color = LedOnRed, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showPrivilegeDialog = false }) {
+                        Text("DONE", color = NothingWhite, fontFamily = FontFamily.Monospace)
+                    }
+                }
+            )
         }
 
         HorizontalDivider(color = NothingBorder, thickness = 1.dp)

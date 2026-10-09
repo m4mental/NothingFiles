@@ -129,16 +129,17 @@ class FileManagerEngine {
             listArchiveItems(archiveInfo.first, archiveInfo.second)
         } else {
             val dir = File(directoryPath)
-            if (!dir.exists() || !dir.isDirectory) {
-                listRootFiles(directoryPath, showHidden)
+            val isProtected = PrivilegedFileEngine.isProtectedPath(directoryPath)
+            if (isProtected || !dir.exists() || !dir.isDirectory) {
+                PrivilegedFileEngine.listFiles(directoryPath, showHidden)
             } else {
                 val rawFiles = dir.listFiles()
-                if (rawFiles != null) {
+                if (rawFiles != null && rawFiles.isNotEmpty()) {
                     rawFiles
                         .filter { showHidden || !it.name.startsWith(".") }
                         .map { FileItem.fromFile(it) }
                 } else {
-                    listRootFiles(directoryPath, showHidden)
+                    PrivilegedFileEngine.listFiles(directoryPath, showHidden)
                 }
             }
         }
@@ -167,13 +168,14 @@ class FileManagerEngine {
             listArchiveItems(archiveInfo.first, archiveInfo.second)
         } else {
             val dir = File(directoryPath)
-            val rawFiles = if (dir.exists() && dir.isDirectory) dir.listFiles() else null
-            if (rawFiles != null) {
+            val isProtected = PrivilegedFileEngine.isProtectedPath(directoryPath)
+            val rawFiles = if (!isProtected && dir.exists() && dir.isDirectory) dir.listFiles() else null
+            if (rawFiles != null && rawFiles.isNotEmpty()) {
                 rawFiles
                     .filter { showHidden || !it.name.startsWith(".") }
                     .map { FileItem.fromFile(it) }
             } else {
-                listRootFiles(directoryPath, showHidden)
+                PrivilegedFileEngine.listFiles(directoryPath, showHidden)
             }
         }
 
@@ -202,61 +204,11 @@ class FileManagerEngine {
         }
     }
 
-    private suspend fun listRootFiles(directoryPath: String, showHidden: Boolean): List<FileItem> = withContext(Dispatchers.IO) {
-        val cleanDir = if (directoryPath.endsWith("/")) directoryPath.dropLast(1) else directoryPath
-        val safePath = if (cleanDir.isEmpty()) "/" else cleanDir
-        val result = RootShellEngine.executeCommand("ls -la \"$safePath\"", runAsRoot = true)
-        if (result.exitCode != 0 || result.stdout.isBlank()) return@withContext emptyList()
-
-        val items = mutableListOf<FileItem>()
-        for (rawLine in result.stdout.lines()) {
-            val line = rawLine.trim()
-            if (line.isEmpty() || line.startsWith("total")) continue
-
-            val tokens = line.split("\\s+".toRegex())
-            if (tokens.size < 7) continue
-
-            val perms = tokens[0]
-            if (!perms.matches("^[dcb-lps][rwxstST-]{9}.*".toRegex())) continue
-
-            val isDirectory = perms.startsWith("d")
-            val isSymlink = perms.startsWith("l")
-            val size = tokens.getOrNull(4)?.toLongOrNull() ?: 0L
-
-            val nameRaw = if (tokens.size >= 8) tokens.drop(7).joinToString(" ") else tokens.last()
-            val name = if (isSymlink && nameRaw.contains(" -> ")) {
-                nameRaw.substringBefore(" -> ").trim()
-            } else {
-                nameRaw.trim()
-            }
-
-            if (name == "." || name == "..") continue
-            if (!showHidden && name.startsWith(".")) continue
-
-            val fullPath = if (safePath == "/") "/$name" else "$safePath/$name"
-
-            items.add(
-                FileItem(
-                    name = name,
-                    path = fullPath,
-                    isDirectory = isDirectory,
-                    size = size,
-                    lastModified = System.currentTimeMillis(),
-                    isHidden = name.startsWith("."),
-                    isSymlink = isSymlink,
-                    permissions = perms.take(10),
-                    childCount = 0
-                )
-            )
-        }
-        items
-    }
-
     suspend fun copyFiles(sources: List<File>, destinationDir: File): Boolean = withContext(Dispatchers.IO) {
         if (!destinationDir.exists()) {
             val made = destinationDir.mkdirs()
             if (!made) {
-                RootShellEngine.executeCommand("mkdir -p \"${destinationDir.absolutePath}\"", runAsRoot = true)
+                PrivilegedFileEngine.executePrivileged("mkdir -p \"${destinationDir.absolutePath}\"")
             }
         }
         var success = true
@@ -271,8 +223,8 @@ class FileManagerEngine {
                     src.copyTo(destFile, overwrite = true)
                 }
             } catch (e: Exception) {
-                // Fallback to root shell cp
-                val res = RootShellEngine.executeCommand("cp -r \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"", runAsRoot = true)
+                // Fallback to privileged cp (Root or Shizuku)
+                val res = PrivilegedFileEngine.executePrivileged("cp -rf \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"")
                 if (res.exitCode != 0) {
                     e.printStackTrace()
                     success = false
@@ -286,7 +238,7 @@ class FileManagerEngine {
         if (!destinationDir.exists()) {
             val made = destinationDir.mkdirs()
             if (!made) {
-                RootShellEngine.executeCommand("mkdir -p \"${destinationDir.absolutePath}\"", runAsRoot = true)
+                PrivilegedFileEngine.executePrivileged("mkdir -p \"${destinationDir.absolutePath}\"")
             }
         }
         var success = true
@@ -295,7 +247,7 @@ class FileManagerEngine {
                 val destFile = File(destinationDir, src.name)
                 val moved = src.renameTo(destFile)
                 if (!moved) {
-                    val res = RootShellEngine.executeCommand("mv \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"", runAsRoot = true)
+                    val res = PrivilegedFileEngine.executePrivileged("mv -f \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"")
                     if (res.exitCode != 0) {
                         if (src.isDirectory) {
                             src.copyRecursively(destFile, overwrite = true)
@@ -307,7 +259,7 @@ class FileManagerEngine {
                     }
                 }
             } catch (e: Exception) {
-                val res = RootShellEngine.executeCommand("mv \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"", runAsRoot = true)
+                val res = PrivilegedFileEngine.executePrivileged("mv -f \"${src.absolutePath}\" \"${destinationDir.absolutePath}/\"")
                 if (res.exitCode != 0) {
                     e.printStackTrace()
                     success = false
@@ -323,11 +275,11 @@ class FileManagerEngine {
             try {
                 val deleted = if (f.isDirectory) f.deleteRecursively() else f.delete()
                 if (!deleted) {
-                    val res = RootShellEngine.executeCommand("rm -rf \"${f.absolutePath}\"", runAsRoot = true)
+                    val res = PrivilegedFileEngine.executePrivileged("rm -rf \"${f.absolutePath}\"")
                     if (res.exitCode != 0) success = false
                 }
             } catch (e: Exception) {
-                val res = RootShellEngine.executeCommand("rm -rf \"${f.absolutePath}\"", runAsRoot = true)
+                val res = PrivilegedFileEngine.executePrivileged("rm -rf \"${f.absolutePath}\"")
                 if (res.exitCode != 0) {
                     e.printStackTrace()
                     success = false
@@ -342,12 +294,12 @@ class FileManagerEngine {
             val destination = File(target.parentFile, newName)
             val renamed = target.renameTo(destination)
             if (!renamed) {
-                val res = RootShellEngine.executeCommand("mv \"${target.absolutePath}\" \"${destination.absolutePath}\"", runAsRoot = true)
+                val res = PrivilegedFileEngine.executePrivileged("mv -f \"${target.absolutePath}\" \"${destination.absolutePath}\"")
                 res.exitCode == 0
             } else true
         } catch (e: Exception) {
             val destination = File(target.parentFile, newName)
-            val res = RootShellEngine.executeCommand("mv \"${target.absolutePath}\" \"${destination.absolutePath}\"", runAsRoot = true)
+            val res = PrivilegedFileEngine.executePrivileged("mv -f \"${target.absolutePath}\" \"${destination.absolutePath}\"")
             res.exitCode == 0
         }
     }
@@ -378,7 +330,7 @@ class FileManagerEngine {
             if (file.renameTo(target)) {
                 renamedCount++
             } else {
-                val res = RootShellEngine.executeCommand("mv \"${file.absolutePath}\" \"${target.absolutePath}\"", runAsRoot = true)
+                val res = PrivilegedFileEngine.executePrivileged("mv -f \"${file.absolutePath}\" \"${target.absolutePath}\"")
                 if (res.exitCode == 0) renamedCount++
             }
         }
@@ -389,7 +341,7 @@ class FileManagerEngine {
         val folder = File(parent, name)
         val created = folder.mkdirs()
         if (!created) {
-            val res = RootShellEngine.executeCommand("mkdir -p \"${folder.absolutePath}\"", runAsRoot = true)
+            val res = PrivilegedFileEngine.executePrivileged("mkdir -p \"${folder.absolutePath}\"")
             res.exitCode == 0
         } else true
     }
@@ -399,11 +351,11 @@ class FileManagerEngine {
         try {
             val created = file.createNewFile()
             if (!created) {
-                val res = RootShellEngine.executeCommand("touch \"${file.absolutePath}\"", runAsRoot = true)
+                val res = PrivilegedFileEngine.executePrivileged("touch \"${file.absolutePath}\"")
                 res.exitCode == 0
             } else true
         } catch (e: Exception) {
-            val res = RootShellEngine.executeCommand("touch \"${file.absolutePath}\"", runAsRoot = true)
+            val res = PrivilegedFileEngine.executePrivileged("touch \"${file.absolutePath}\"")
             res.exitCode == 0
         }
     }

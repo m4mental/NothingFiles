@@ -3,11 +3,11 @@ package com.nothing.files.ui.theme
 import androidx.compose.ui.graphics.Color
 
 val NothingBlack = Color(0xFF000000)
-val NothingSurface = Color(0xFF0C0C0C)
-val NothingSurfaceElevated = Color(0xFF161616)
-val NothingSurfaceInteractive = Color(0xFF202020)
-val NothingBorder = Color(0xFF262626)
-val NothingBorderLight = Color(0xFF383838)
+val NothingSurface = Color(0xFF000000)
+val NothingSurfaceElevated = Color(0xFF080808)
+val NothingSurfaceInteractive = Color(0xFF121212)
+val NothingBorder = Color(0xFF1E1E20)
+val NothingBorderLight = Color(0xFF2A2A2E)
 
 // Iconic Nothing Brand Red
 val NothingRed = Color(0xFFD71921)
