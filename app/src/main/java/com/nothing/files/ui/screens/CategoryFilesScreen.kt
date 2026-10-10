@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.nothing.files.engine.CategoryScannerEngine
+import com.nothing.files.engine.FileIdentifierEngine
 import com.nothing.files.model.FileItem
 import com.nothing.files.model.NavItemType
 import com.nothing.files.ui.components.FileItemRow
@@ -73,6 +74,8 @@ fun CategoryFilesScreen(
 
     var archiveFile by remember { mutableStateOf<FileItem?>(null) }
     var checksumFile by remember { mutableStateOf<FileItem?>(null) }
+    var apkActionFile by remember { mutableStateOf<FileItem?>(null) }
+    var openWithOptionsFile by remember { mutableStateOf<FileItem?>(null) }
 
     LaunchedEffect(categoryType) {
         isLoading = true
@@ -197,16 +200,17 @@ fun CategoryFilesScreen(
                             isSelectionMode = false,
                             onClick = {
                                 when {
+                                    file.isApk -> apkActionFile = file
                                     file.isArchive -> archiveFile = file
                                     file.isTextOrCode -> onOpenTextEditor(file)
-                                    else -> openFileWithExternalApp(file, context)
+                                    else -> openWithOptionsFile = file
                                 }
                             },
                             onLongClick = {
                                 checksumFile = file
                             },
                             onMenuClick = {
-                                openFileWithExternalApp(file, context)
+                                if (file.isApk) apkActionFile = file else openWithOptionsFile = file
                             }
                         )
                     }
@@ -222,25 +226,33 @@ fun CategoryFilesScreen(
     checksumFile?.let { chk ->
         ChecksumDialog(fileItem = chk, onDismiss = { checksumFile = null })
     }
+
+    apkActionFile?.let { apk ->
+        ApkActionDialog(
+            fileItem = apk,
+            onDismiss = { apkActionFile = null },
+            onBrowseArchive = { archiveFile = it },
+            onOpenWithOptions = { openWithOptionsFile = it },
+            onShare = { openFileWithExternalApp(it, context) }
+        )
+    }
+
+    openWithOptionsFile?.let { target ->
+        OpenFileOptionsDialog(
+            fileItem = target,
+            onDismiss = { openWithOptionsFile = null },
+            onOpenTextEditor = { onOpenTextEditor(it) },
+            onBrowseArchive = if (target.isArchive || target.isApk) { { archiveFile = it } } else null,
+            onShare = { openFileWithExternalApp(it, context) }
+        )
+    }
 }
 
 private fun openFileWithExternalApp(fileItem: FileItem, context: Context) {
     try {
-        val file = File(fileItem.path)
-        val uri: Uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            file
-        )
-
-        val ext = file.extension.lowercase()
-        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
-
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mime)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(Intent.createChooser(intent, "Open with"))
+        val uri = FileIdentifierEngine.resolveFileUri(context, fileItem)
+        val mime = FileIdentifierEngine.getMimeType(fileItem.extension)
+        FileIdentifierEngine.openSystemChooser(context, uri, mime, "Open ${fileItem.name}")
     } catch (e: Exception) {
         Toast.makeText(context, "No app found to open this file", Toast.LENGTH_SHORT).show()
     }

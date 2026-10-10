@@ -30,10 +30,10 @@ data class FileItem(
         get() = if (isDirectory) "" else name.substringAfterLast('.', "").lowercase()
 
     val isArchive: Boolean
-        get() = extension in listOf("zip", "rar", "7z", "tar", "gz", "bz2", "xz", "apk", "jar")
+        get() = extension in listOf("zip", "rar", "7z", "tar", "gz", "bz2", "xz")
 
     val isApk: Boolean
-        get() = extension == "apk"
+        get() = extension in listOf("apk", "xapk", "apks", "aab")
 
     val isImage: Boolean
         get() = extension in listOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "heic")
@@ -52,6 +52,15 @@ data class FileItem(
 
     val isPdfOrDoc: Boolean
         get() = extension in listOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "epub")
+
+    val fileCategory: com.nothing.files.engine.FileCategory
+        get() = com.nothing.files.engine.FileIdentifierEngine.getCategory(extension)
+
+    val fileTypeDescription: String
+        get() = if (isDirectory) "Directory" else com.nothing.files.engine.FileIdentifierEngine.getTypeDescription(extension)
+
+    val mimeType: String
+        get() = if (isDirectory) "resource/folder" else com.nothing.files.engine.FileIdentifierEngine.getMimeType(extension)
 
     val formattedSize: String
         get() {
@@ -73,17 +82,7 @@ data class FileItem(
 
     val dotMatrixTypeTag: String
         get() {
-            return when {
-                isDirectory -> "DIR"
-                isApk -> "APK"
-                isArchive -> "ARC"
-                isImage -> "IMG"
-                isVideo -> "VID"
-                isAudio -> "AUD"
-                isTextOrCode -> "CODE"
-                isPdfOrDoc -> "DOC"
-                else -> extension.take(4).uppercase().ifEmpty { "BIN" }
-            }
+            return if (isDirectory) "DIR" else com.nothing.files.engine.FileIdentifierEngine.getDotMatrixTag(extension, isDirectory)
         }
 
     companion object {

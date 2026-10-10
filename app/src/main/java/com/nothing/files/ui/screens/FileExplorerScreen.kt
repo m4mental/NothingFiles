@@ -122,6 +122,7 @@ import com.nothing.files.ui.theme.LedOnRed
 import com.nothing.files.ui.theme.NothingBlack
 import com.nothing.files.ui.theme.NothingBorder
 import com.nothing.files.ui.theme.NothingRed
+import com.nothing.files.ui.theme.NothingAccentGreen
 import com.nothing.files.ui.theme.NothingSurface
 import com.nothing.files.ui.theme.NothingSurfaceElevated
 import com.nothing.files.ui.theme.NothingTextSecondary
@@ -140,6 +141,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import com.nothing.files.ui.components.FileThumbnailView
+import com.nothing.files.engine.FileIdentifierEngine
+import androidx.compose.material.icons.filled.InstallMobile
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -244,6 +247,8 @@ fun FileExplorerScreen(
     var checksumFile by remember { mutableStateOf<FileItem?>(null) }
     var archiveFile by remember { mutableStateOf<FileItem?>(null) }
     var permissionsFile by remember { mutableStateOf<FileItem?>(null) }
+    var apkActionFile by remember { mutableStateOf<FileItem?>(null) }
+    var openWithOptionsFile by remember { mutableStateOf<FileItem?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
     var showBatchRename by remember { mutableStateOf(false) }
@@ -492,8 +497,15 @@ fun FileExplorerScreen(
     val onOpenFile: (FileItem) -> Unit = { file ->
         val archiveInfo = engine.findArchiveInfo(file.path)
         when {
-            file.isDirectory || file.isArchive -> {
-                // Browses directly into directory or archive as a folder!
+            file.isDirectory -> {
+                tabs[activeTabIndex] = currentTab.navigateTo(file.path)
+            }
+            file.isApk -> {
+                // Do NOT browse into APK! Show APK action dialog (Install / Browse / Open with / Share)
+                apkActionFile = file
+            }
+            file.isArchive -> {
+                // Browses into archive as a virtual folder
                 tabs[activeTabIndex] = currentTab.navigateTo(file.path)
             }
             archiveInfo != null && !file.isDirectory -> {
@@ -506,7 +518,7 @@ fun FileExplorerScreen(
                         if (previewItem.isTextOrCode) {
                             onOpenTextEditor(previewItem)
                         } else {
-                            openWithExternalApp(previewItem, context)
+                            openWithOptionsFile = previewItem
                         }
                     } else {
                         Toast.makeText(context, "Cannot preview archive entry", Toast.LENGTH_SHORT).show()
@@ -514,7 +526,9 @@ fun FileExplorerScreen(
                 }
             }
             file.isTextOrCode -> onOpenTextEditor(file)
-            else -> openWithExternalApp(file, context)
+            else -> {
+                openWithOptionsFile = file
+            }
         }
     }
 
@@ -810,7 +824,7 @@ fun FileExplorerScreen(
                                         colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
-                                            selectedFiles.firstOrNull()?.let { openWithExternalApp(it, context) }
+                                            selectedFiles.firstOrNull()?.let { onOpenFile(it) }
                                         }
                                     )
                                     DropdownMenuItem(
@@ -818,7 +832,7 @@ fun FileExplorerScreen(
                                         colors = menuColors,
                                         onClick = {
                                             showSelectionOverflowMenu = false
-                                            selectedFiles.firstOrNull()?.let { openWithExternalApp(it, context) }
+                                            selectedFiles.firstOrNull()?.let { openWithOptionsFile = it }
                                         }
                                     )
                                     DropdownMenuItem(
@@ -1802,6 +1816,49 @@ fun FileExplorerScreen(
                         }
                     )
                 }
+                if (item.isApk) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.InstallMobile, contentDescription = null, tint = NothingAccentGreen, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Install App", fontFamily = FontFamily.Monospace, color = NothingAccentGreen)
+                            }
+                        },
+                        onClick = {
+                            val apk = item
+                            itemMenuFile = null
+                            FileIdentifierEngine.installApk(context, apk)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Folder, contentDescription = null, tint = NothingWhite, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Browse Inside APK", fontFamily = FontFamily.Monospace)
+                            }
+                        },
+                        onClick = {
+                            itemMenuFile = null
+                            tabs[activeTabIndex] = currentTab.navigateTo(item.path)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Android, contentDescription = null, tint = NothingWhite, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("App Details & Actions", fontFamily = FontFamily.Monospace)
+                            }
+                        },
+                        onClick = {
+                            val apk = item
+                            itemMenuFile = null
+                            apkActionFile = apk
+                        }
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("Permissions (chmod)", fontFamily = FontFamily.Monospace) },
                     onClick = {
@@ -1810,10 +1867,11 @@ fun FileExplorerScreen(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Open in External App", fontFamily = FontFamily.Monospace) },
+                    text = { Text("Open with...", fontFamily = FontFamily.Monospace) },
                     onClick = {
-                        openWithExternalApp(item, context)
+                        val target = item
                         itemMenuFile = null
+                        openWithOptionsFile = target
                     }
                 )
             }
@@ -2458,6 +2516,38 @@ fun FileExplorerScreen(
         PermissionsDialog(fileItem = file, onDismiss = { permissionsFile = null; refreshFiles() })
     }
 
+    apkActionFile?.let { apkFile ->
+        ApkActionDialog(
+            fileItem = apkFile,
+            onDismiss = { apkActionFile = null },
+            onBrowseArchive = { file ->
+                tabs[activeTabIndex] = currentTab.navigateTo(file.path)
+            },
+            onOpenWithOptions = { file ->
+                openWithOptionsFile = file
+            },
+            onShare = { file ->
+                shareFiles(context, listOf(file))
+            }
+        )
+    }
+
+    openWithOptionsFile?.let { targetFile ->
+        OpenFileOptionsDialog(
+            fileItem = targetFile,
+            onDismiss = { openWithOptionsFile = null },
+            onOpenTextEditor = { file ->
+                onOpenTextEditor(file)
+            },
+            onBrowseArchive = if (targetFile.isArchive || targetFile.isApk) {
+                { file -> tabs[activeTabIndex] = currentTab.navigateTo(file.path) }
+            } else null,
+            onShare = { file ->
+                shareFiles(context, listOf(file))
+            }
+        )
+    }
+
     if (showBatchRename) {
         BatchRenameDialog(
             selectedFiles = selectedFiles,
@@ -2745,11 +2835,16 @@ private fun FileExplorerRowItem(
                 }
                 if (viewMode == ViewMode.DETAILED) {
                     Text(
-                        text = "${file.formattedDate}   ${file.permissions}",
+                        text = if (file.isDirectory) {
+                            "${file.formattedDate}   ${file.permissions}"
+                        } else {
+                            "[${file.dotMatrixTypeTag}] ${file.fileTypeDescription} • ${file.formattedDate}"
+                        },
                         fontFamily = FontFamily.Monospace,
                         fontSize = subtitleFontSize,
                         color = NothingTextSecondary,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -2757,7 +2852,7 @@ private fun FileExplorerRowItem(
             // Right side: Item count in parentheses `(58)` for folders, or size for files
             if (!isMinimal) {
                 Text(
-                    text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
+                    text = if (file.isDirectory) "(${file.childCount})" else (if (viewMode == ViewMode.DETAILED) file.formattedSize else "${file.dotMatrixTypeTag} • ${file.formattedSize}"),
                     fontFamily = FontFamily.Monospace,
                     fontSize = countFontSize,
                     color = NothingTextSecondary
@@ -2861,7 +2956,7 @@ private fun FileExplorerGridItem(
                 )
 
                 Text(
-                    text = if (appLabel != null) file.name else (if (file.isDirectory) "(${file.childCount})" else file.formattedSize),
+                    text = if (appLabel != null) file.name else (if (file.isDirectory) "(${file.childCount})" else "${file.dotMatrixTypeTag} • ${file.formattedSize}"),
                     fontFamily = FontFamily.Monospace,
                     fontSize = subtitleFontSize,
                     color = NothingTextSecondary,
@@ -3066,7 +3161,7 @@ private fun FileExplorerCompactRow(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = if (file.isDirectory) "(${file.childCount})" else file.formattedSize,
+                    text = if (file.isDirectory) "(${file.childCount})" else "${file.dotMatrixTypeTag} • ${file.formattedSize}",
                     fontFamily = FontFamily.Monospace,
                     fontSize = countFontSize,
                     color = NothingTextSecondary
@@ -3131,21 +3226,9 @@ private fun shareFiles(context: Context, files: List<FileItem>) {
 
 private fun openWithExternalApp(fileItem: FileItem, context: Context) {
     try {
-        val file = File(fileItem.path)
-        val uri: Uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            file
-        )
-
-        val ext = file.extension.lowercase()
-        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
-
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mime)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(Intent.createChooser(intent, "Open with"))
+        val uri = FileIdentifierEngine.resolveFileUri(context, fileItem)
+        val mime = FileIdentifierEngine.getMimeType(fileItem.extension)
+        FileIdentifierEngine.openSystemChooser(context, uri, mime, "Open ${fileItem.name}")
     } catch (e: Exception) {
         Toast.makeText(context, "No app found to open this file", Toast.LENGTH_SHORT).show()
     }
